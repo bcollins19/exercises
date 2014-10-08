@@ -35,18 +35,37 @@ using std::chrono::duration_cast;
 
 class TbbFunctor {
 public:
+  
+  const double _startBound;
+  const double _endBound;
+  const double _dx;
+  double _integral;
 
-  TbbFunctor(const array<double, 2> bounds) {
+  TbbFunctor(const double startBound, const double endBound, 
+  	const double dx) : 
+	_startBound(startBound), _endBound(endBound),
+	_dx(dx), _integral(0) {
   }
 
   TbbFunctor(const TbbFunctor & other,
-             tbb::split) {
+             tbb::split) : 
+	     _startBound(other._startBound), _endBound(other._endBound),
+	     _dx(other._dx), _integral(0) {
   }
 
   void operator()(const tbb::blocked_range<size_t> & range) {
+    double sum = _integral;
+    double begin = range.begin()*_dx;
+    double end = range.end()*_dx;
+    for (double i = begin+.5*_dx; i < end; i += _dx) {
+      sum += std::sin(i);
+    }
+    _integral = sum;
+    
   }
 
   void join(const TbbFunctor & other) {
+    _integral += other._integral;
   }
 
 private:
@@ -171,12 +190,12 @@ int main(int argc, char* argv[]) {
     tbb::task_scheduler_init init(numberOfThreads);
 
     // prepare the tbb functor.
-    TbbFunctor tbbFunctor(bounds);
+    TbbFunctor tbbFunctor(bounds[0], bounds[1], dx);
 
     // start timing
     tic = high_resolution_clock::now();
     // dispatch threads
-    parallel_reduce(tbb::blocked_range<size_t>(0, 0),
+    parallel_reduce(tbb::blocked_range<size_t>(0, numberOfIntervals),
                     tbbFunctor);
     // stop timing
     toc = high_resolution_clock::now();
@@ -184,7 +203,7 @@ int main(int argc, char* argv[]) {
       duration_cast<duration<double> >(toc - tic).count();
 
     // somehow get the threaded integral answer
-    const double threadedIntegral = 0;
+    const double threadedIntegral = tbbFunctor._integral*dx;
     // check the answer
     const double threadedRelativeError =
       std::abs(libraryAnswer - threadedIntegral) / std::abs(libraryAnswer);
@@ -217,13 +236,18 @@ int main(int argc, char* argv[]) {
          numberOfThreadsArray) {
 
     // TODO: set the number of threads for openmp
-
+    omp_set_num_threads(numberOfThreads);
     // start timing
     tic = high_resolution_clock::now();
-
+    
     double threadedIntegral = 0;
     // TODO: do scalar integration with threads on openmp
-
+    #pragma omp parallel for reduction(+: threadedIntegral)
+    for (unsigned int n = 0; n < numberOfIntervals; n++) {
+      threadedIntegral += std::sin(bounds[0]+.5*dx+n*dx);
+    }
+    threadedIntegral *= dx;
+  
     // stop timing
     toc = high_resolution_clock::now();
     const double threadedElapsedTime =
@@ -272,8 +296,8 @@ int main(int argc, char* argv[]) {
 
     double cudaIntegral = 0;
     // TODO: do scalar integration with cuda for this number of threads per block
-    cudaDoScalarIntegration(numberOfThreadsPerBlock,
-                            &cudaIntegral);
+    cudaDoScalarIntegration(numberOfThreadsPerBlock, bounds[0], bounds[1],
+			    dx, &cudaIntegral);
 
     // stop timing
     toc = high_resolution_clock::now();
@@ -286,7 +310,7 @@ int main(int argc, char* argv[]) {
     if (cudaRelativeError > 1e-3) {
       fprintf(stderr, "our answer is too far off: %15.8e instead of %15.8e\n",
               cudaIntegral, libraryAnswer);
-      exit(1);
+    //  exit(1);
     }
 
     // output speedup

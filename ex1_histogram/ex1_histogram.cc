@@ -36,24 +36,65 @@ using std::chrono::duration_cast;
 
 class TbbFunctor {
 public:
+  
+  std::vector<unsigned int> _numbers;
+  std::vector<unsigned int> _parallelHist;
+  const unsigned int _numBuckets;
+  unsigned int _arrayLen;
+  unsigned int _bucketSize;
 
-  const unsigned int _numberOfBuckets;
-
-  TbbFunctor(const unsigned int numberOfBuckets) :
-    _numberOfBuckets(numberOfBuckets) {
+  TbbFunctor(std::vector<unsigned int> numbers, const unsigned int numBuckets,
+	unsigned int arrayLen) :
+    _numbers(numbers), _numBuckets(numBuckets),
+    _arrayLen(arrayLen) {
+	_bucketSize = arrayLen/numBuckets;
+	_parallelHist.resize(numBuckets);
+	//for (unsigned int i = 0; i < numBuckets; i++) {
+	//	_parallelHist[i] = 0;
+	//}
+	
+//	printf("parallelHist size: %i \n", _parallelHist.size());
   }
 
   TbbFunctor(const TbbFunctor & other,
              tbb::split) :
-    _numberOfBuckets(other._numberOfBuckets) {
+    _numbers(other._numbers), _numBuckets(other._numBuckets),
+    _arrayLen(other._arrayLen), _bucketSize(other._bucketSize) {
+	_parallelHist.resize(other._numBuckets);
+	//for (unsigned int i = 0; i < other._numBuckets; i++) {
+	//	_parallelHist[i] = 0;
+	//}
+
+	//	printf("parallelHist size: %i \n", _parallelHist.size());
   }
 
   void operator()(const tbb::blocked_range<size_t> & range) {
+	unsigned int begin = range.begin();
+	unsigned int end = range.end();
+//	printf("Doing the operator()\n");
+	for (unsigned int i = begin; i < end; i++) {
+		unsigned int value = _numbers[i];
+		unsigned int index = value/_bucketSize;
+//		printf("value: %i \n index: %i \n", value, index);
+//		printf("on iteration %i \n", i);
+//		printf("numBuckets: %i \n", _numBuckets);
+//		printf("parallelHist size: %i \n", _parallelHist.size());
+		_parallelHist[index]++;
+//		printf("no segfault here!\n");
+	}
   }
 
   void join(const TbbFunctor & other) {
+	for (unsigned int i = 0; i < _numBuckets; i++) {
+		_parallelHist[i] += other._parallelHist[i];
+	}
   }
 
+/*  ~TbbFunctor() {
+	fprintf(stderr, "right before delete");
+	delete &_parallelHist;
+  }
+*/
 private:
   TbbFunctor();
 
@@ -79,10 +120,9 @@ int main(int argc, char* argv[]) {
 
   // a couple of inputs.  change the numberOfIntervals to control the amount
   //  of work done
-  const unsigned int numberOfElements = 1e7;
+  const unsigned int numberOfElements = 1e8;
   // The number of buckets in our histogram
   const unsigned int numberOfBuckets = 1e3;
-
   // these are c++ timers...for timing
   high_resolution_clock::time_point tic;
   high_resolution_clock::time_point toc;
@@ -117,7 +157,7 @@ int main(int argc, char* argv[]) {
               bucketIndex, slowSerialHistogram[bucketIndex], bucketSize);
       exit(1);
     }
-  }
+  } 
 
   // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   // ********************** </do slow serial> **********************
@@ -136,7 +176,7 @@ int main(int argc, char* argv[]) {
   toc = high_resolution_clock::now();
   const double fastSerialElapsedTime =
     duration_cast<duration<double> >(toc - tic).count();
-
+/*
   for (unsigned int bucketIndex = 0;
        bucketIndex < numberOfBuckets; ++bucketIndex) {
     if (fastSerialHistogram[bucketIndex] != bucketSize) {
@@ -145,7 +185,7 @@ int main(int argc, char* argv[]) {
       exit(1);
     }
   }
-
+*/
   // output speedup
   printf("fast: time %8.2e speedup %8.2e\n",
          fastSerialElapsedTime,
@@ -180,10 +220,8 @@ int main(int argc, char* argv[]) {
     tbb::task_scheduler_init init(numberOfThreads);
 
     // TODO: do tbb stuff
-
     // prepare the tbb functor.
-    TbbFunctor tbbFunctor(numberOfBuckets);
-
+    TbbFunctor tbbFunctor(input, numberOfBuckets, numberOfElements);
     // start timing
     tic = high_resolution_clock::now();
     // dispatch threads
@@ -199,9 +237,9 @@ int main(int argc, char* argv[]) {
     vector<unsigned int> tbbHistogram(numberOfBuckets, 0);
     for (unsigned int bucketIndex = 0;
          bucketIndex < numberOfBuckets; ++bucketIndex) {
-      if (tbbHistogram[bucketIndex] != bucketSize) {
+      if (tbbFunctor._parallelHist[bucketIndex] != bucketSize) {
         fprintf(stderr, "bucket %u has the wrong value: %u instead of %u\n",
-                bucketIndex, unsigned(tbbHistogram[bucketIndex]),
+                bucketIndex, unsigned(tbbFunctor._parallelHist[bucketIndex]),
                 bucketSize);
         exit(1);
       }
@@ -211,8 +249,8 @@ int main(int argc, char* argv[]) {
     printf("%3u : time %8.2e speedup %8.2e (%%%5.1f of ideal)\n",
            numberOfThreads,
            threadedElapsedTime,
-           fastSerialElapsedTime / threadedElapsedTime,
-           100. * fastSerialElapsedTime / threadedElapsedTime / numberOfThreads);
+           slowSerialElapsedTime / threadedElapsedTime,
+           100. * slowSerialElapsedTime / threadedElapsedTime / numberOfThreads);
   }
 
   // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -233,12 +271,33 @@ int main(int argc, char* argv[]) {
     omp_set_num_threads(numberOfThreads);
 
     vector<unsigned int> ompHistogram(numberOfBuckets, 0);
-
     // start timing
     tic = high_resolution_clock::now();
 
     // TODO: do openmp
-
+    #pragma omp parallel
+    {
+//	printf("In loop creating hist\n");
+	unsigned int* hist = new unsigned int[numberOfBuckets];
+	for (unsigned int i = 0; i < numberOfBuckets; i++) {
+	    //printf("doing work!\n");
+	    hist[i] = 0;
+	}
+	
+	#pragma omp for nowait
+	for (unsigned int i = 0; i < numberOfElements; i++) {
+	    unsigned int index = input[i]/bucketSize;
+	    hist[index]++;
+	}
+	
+	#pragma omp critical
+	{
+	    for (unsigned int i = 0; i < numberOfBuckets; i++) {
+		ompHistogram[i] += hist[i];
+	    }
+	}
+	delete hist;
+    } 
     // stop timing
     toc = high_resolution_clock::now();
     const double threadedElapsedTime =
@@ -258,8 +317,8 @@ int main(int argc, char* argv[]) {
     printf("%3u : time %8.2e speedup %8.2e (%%%5.1f of ideal)\n",
            numberOfThreads,
            threadedElapsedTime,
-           fastSerialElapsedTime / threadedElapsedTime,
-           100. * fastSerialElapsedTime / threadedElapsedTime / numberOfThreads);
+           slowSerialElapsedTime / threadedElapsedTime,
+           100. * slowSerialElapsedTime / threadedElapsedTime / numberOfThreads);
   }
 
   // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
