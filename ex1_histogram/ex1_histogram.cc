@@ -34,26 +34,24 @@ using std::chrono::high_resolution_clock;
 using std::chrono::duration;
 using std::chrono::duration_cast;
 
+typedef Kokkos::View<unsigned int *> view_type;
+
 class TbbFunctor {
 public:
   
-  std::vector<unsigned int> _numbers;
+  std::vector<unsigned int> * _numbers;
   std::vector<unsigned int> _parallelHist;
   const unsigned int _numBuckets;
   unsigned int _arrayLen;
   unsigned int _bucketSize;
 
-  TbbFunctor(std::vector<unsigned int> numbers, const unsigned int numBuckets,
+  TbbFunctor(std::vector<unsigned int> * numbers, const unsigned int numBuckets,
 	unsigned int arrayLen) :
     _numbers(numbers), _numBuckets(numBuckets),
     _arrayLen(arrayLen) {
 	_bucketSize = arrayLen/numBuckets;
 	_parallelHist.resize(numBuckets);
-	//for (unsigned int i = 0; i < numBuckets; i++) {
-	//	_parallelHist[i] = 0;
-	//}
 	
-//	printf("parallelHist size: %i \n", _parallelHist.size());
   }
 
   TbbFunctor(const TbbFunctor & other,
@@ -61,26 +59,16 @@ public:
     _numbers(other._numbers), _numBuckets(other._numBuckets),
     _arrayLen(other._arrayLen), _bucketSize(other._bucketSize) {
 	_parallelHist.resize(other._numBuckets);
-	//for (unsigned int i = 0; i < other._numBuckets; i++) {
-	//	_parallelHist[i] = 0;
-	//}
 
-	//	printf("parallelHist size: %i \n", _parallelHist.size());
   }
 
   void operator()(const tbb::blocked_range<size_t> & range) {
 	unsigned int begin = range.begin();
 	unsigned int end = range.end();
-//	printf("Doing the operator()\n");
 	for (unsigned int i = begin; i < end; i++) {
-		unsigned int value = _numbers[i];
+		unsigned int value = (*_numbers)[i];
 		unsigned int index = value/_bucketSize;
-//		printf("value: %i \n index: %i \n", value, index);
-//		printf("on iteration %i \n", i);
-//		printf("numBuckets: %i \n", _numBuckets);
-//		printf("parallelHist size: %i \n", _parallelHist.size());
 		_parallelHist[index]++;
-//		printf("no segfault here!\n");
 	}
   }
 
@@ -102,13 +90,33 @@ private:
 
 struct KokkosFunctor {
 
+  
+  std::vector<unsigned int> * _numbers;
+  view_type * _parallelHist;  
   const unsigned int _bucketSize;
+  const unsigned int _numBuckets;
+  const unsigned int _numThreads;
 
-  KokkosFunctor(const double bucketSize) : _bucketSize(bucketSize) {
+  KokkosFunctor(std::vector<unsigned int> * numbers, const unsigned int bucketSize, 
+		const unsigned int numBuckets, const unsigned int numThreads, 
+		view_type * parallelHist) : 
+    _numbers(numbers), _parallelHist(parallelHist), _bucketSize(bucketSize), _numBuckets(numBuckets),
+    _numThreads(numThreads) {
+    //_parallelHist.resize(numBuckets);
   }
 
   KOKKOS_INLINE_FUNCTION
   void operator()(const unsigned int elementIndex) const {
+//    printf("starting oper()\n");
+    unsigned int begin = (*_numbers).size() * elementIndex/_numThreads;
+    unsigned int end = (*_numbers).size() * (elementIndex+1)/_numThreads;
+    for (unsigned int i = begin; i < end; i++) {
+	unsigned int value = (*_numbers)[i];
+//	printf("value: %i\nindex: %i\n", value, value/_bucketSize);
+	Kokkos::atomic_fetch_add(&(*_parallelHist)[value/_bucketSize], 1);
+//	printf("got past the fetch\n");
+    }
+//    printf("done with oper()\n");
   }
 
 private:
@@ -221,7 +229,7 @@ int main(int argc, char* argv[]) {
 
     // TODO: do tbb stuff
     // prepare the tbb functor.
-    TbbFunctor tbbFunctor(input, numberOfBuckets, numberOfElements);
+    TbbFunctor tbbFunctor(&input, numberOfBuckets, numberOfElements);
     // start timing
     tic = high_resolution_clock::now();
     // dispatch threads
@@ -328,7 +336,7 @@ int main(int argc, char* argv[]) {
   // ===============================================================
   // ********************** < do cuda> *****************************
   // vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
-
+/*
   printf("performing calculations with cuda\n");
   // we will repeat the computation for each of the numbers of threads
   vector<unsigned int> threadsPerBlockArray;
@@ -375,7 +383,7 @@ int main(int argc, char* argv[]) {
            cudaElapsedTime,
            fastSerialElapsedTime / cudaElapsedTime);
   }
-
+*/
   // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   // ********************** </do cuda> *****************************
   // ===============================================================
@@ -393,7 +401,12 @@ int main(int argc, char* argv[]) {
   tic = high_resolution_clock::now();
 
   // TODO: do kokkos stuff
-
+    view_type hist("HIST", numberOfBuckets);
+    const unsigned int numThreads = 1000;
+    KokkosFunctor kokkosFunctor(&input, bucketSize, numberOfBuckets, numThreads, 
+	    &hist);
+    printf("Made functor\n"); 
+    Kokkos::parallel_for(numThreads, kokkosFunctor);
   // stop timing
   toc = high_resolution_clock::now();
   const double kokkosElapsedTime =
@@ -403,7 +416,7 @@ int main(int argc, char* argv[]) {
   vector<unsigned int> kokkosHistogram(numberOfBuckets, 0);
   for (unsigned int bucketIndex = 0;
        bucketIndex < numberOfBuckets; ++bucketIndex) {
-    if (kokkosHistogram[bucketIndex] != bucketSize) {
+    if ((*kokkosFunctor._parallelHist)[bucketIndex] != bucketSize) {
       fprintf(stderr, "bucket %u has the wrong value: %u instead of %u\n",
               bucketIndex, kokkosHistogram[bucketIndex], bucketSize);
       exit(1);

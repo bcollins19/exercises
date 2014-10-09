@@ -74,18 +74,30 @@ private:
 };
 
 struct KokkosFunctor {
-
+  
+  typedef double value_type;
   const double _dx;
-
-  KokkosFunctor(const double dx) : _dx(dx) {
+  const double _startBound;
+  const double _endBound;
+  const int _numThreads;
+  //int _test;
+  KokkosFunctor(const double dx, const double startBound, const double endBound,
+		const int numThreads) : 
+    _dx(dx), _startBound(startBound), _endBound(endBound), _numThreads(numThreads) {
   }
 
   KOKKOS_INLINE_FUNCTION
-  void operator()(const unsigned int intervalIndex) const {
+  void operator()(int i, double &lsum) const { //const unsigned int intervalIndex) const {
+    double end = _startBound + (_endBound - _startBound)*
+		((double)(i+1)/(double)_numThreads);
+    double begin = _startBound + (_endBound - _startBound)*((double)i/(double)_numThreads);
+    for (double j = begin+.5*_dx; j < end; j += _dx) {
+	lsum += std::sin(j);
+    }
   }
 
-private:
-  KokkosFunctor();
+//private:
+//  KokkosFunctor();
 
 };
 
@@ -334,15 +346,18 @@ int main(int argc, char* argv[]) {
 
   Kokkos::initialize();
 
-  const KokkosFunctor kokkosFunctor(dx);
+  const int numberThreads = 50;
+  const KokkosFunctor kokkosFunctor(dx, bounds[0], bounds[1], numberThreads);
 
   // start timing
   tic = high_resolution_clock::now();
 
-  const double kokkosIntegral = 0;
+  double kokkosIntegral = 0;
   // TODO: calculate integral using kokkos
 
+    Kokkos::parallel_reduce(numberThreads, kokkosFunctor, kokkosIntegral);
   // stop timing
+    kokkosIntegral *= dx;
   toc = high_resolution_clock::now();
   const double kokkosElapsedTime =
     duration_cast<duration<double> >(toc - tic).count();
@@ -351,7 +366,7 @@ int main(int argc, char* argv[]) {
   const double kokkosRelativeError =
     std::abs(libraryAnswer - kokkosIntegral) / std::abs(libraryAnswer);
   if (kokkosRelativeError > 1e-3) {
-    fprintf(stderr, "our answer is too far off: %15.8e instead of %15.8e\n",
+    fprintf(stderr, "our answer is too far off: %15.8e instead of %15.8e \n",
             kokkosIntegral, libraryAnswer);
     exit(1);
   }
