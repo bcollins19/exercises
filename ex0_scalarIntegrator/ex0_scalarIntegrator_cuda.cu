@@ -78,4 +78,5 @@ cudaDoScalarIntegration(const unsigned int numberOfThreadsPerBlock,
 
   // clean up
   cudaFree(dev_junk);
+  cudaFree(dev_output);
 }
