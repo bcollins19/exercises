@@ -25,7 +25,8 @@ cudaDoScalarIntegration_kernel(double* output) {
 
 void
 cudaDoScalarIntegration(const unsigned int numberOfThreadsPerBlock,
-                        double * const output) {
+			const double startBound, double endBound,
+			const double dx, double * const output) {
 
   // TODO: you have to do stuff in here, the junk below is just to show syntax
 
