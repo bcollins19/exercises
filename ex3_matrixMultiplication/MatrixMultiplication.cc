@@ -154,7 +154,7 @@ private:
 
 };
 
-typedef Kokkos::View<RowMajorMatrix*> view_type;
+typedef Kokkos::View<double*> view_type;
 typedef view_type::HostMirror host_view_type;
 
 struct KokkosFunctor {
@@ -175,9 +175,10 @@ struct KokkosFunctor {
   void operator()(const unsigned int elementIndex) const {
     // TODO: something!
     for (unsigned int j = 0; j < _matrixSize; j++) {
+	//printf("about to do a multiply\n");
 	for (unsigned int k = 0; k < _matrixSize; k++) {
-	    _resultMatrix(0)(elementIndex, j) += _leftMatrix(0)(elementIndex, k) * 
-					      _rightMatrix(0)(k, j);
+	    _resultMatrix(elementIndex*_matrixSize + j) += _leftMatrix(elementIndex*
+			    _matrixSize + k) * _rightMatrix(k*_matrixSize + j);
 	}
     }
   }
@@ -492,26 +493,59 @@ int main(int argc, char* argv[]) {
   Kokkos::initialize();
 
   //printf("kokkos is running on %s\n", typeid(Kokkos::DefaultExecutionSpace).name());
-
+  double* dRightMat = new double[matrixSize*matrixSize];
+  double* dLeftMat = new double[matrixSize*matrixSize];
+  double* dResultMat = new double[matrixSize*matrixSize];
+ /* for (unsigned int i = 0; i < matrixSize; i++) {
+    dRightMat[i] = new double[matrixSize];
+    dLeftMat[i] = new double[matrixSize];
+    dResultMat[i] = new double[matrixSize];
+  }*/
+  for (unsigned int i = 0; i < matrixSize; i++) {
+    for (unsigned int j = 0; j < matrixSize; j++) {
+	dRightMat[i*matrixSize + j] = rightMatrixRow(i, j);
+	dLeftMat[i*matrixSize + j] = leftMatrix(i, j);
+	dResultMat[i*matrixSize + j] = 0;
+    }
+  }
+  printf("got past the initialization of double**\n");
   // start timing
   tic = high_resolution_clock::now();
-
+  double checkSumKokkos = 0;
   for (unsigned int repeatIndex = 0;
        repeatIndex < numberOfRepeats; ++repeatIndex) {
     // TODO: do kokkos calculation
-    view_type rightMat("right", rightMatrixRow);
-    view_type leftMat("left", leftMatrix);
-    view_type resultMat("result", resultMatrix);
     
+    // Make views for Kokkos Matrices
+    view_type rightMat("right", matrixSize*matrixSize);
+    view_type leftMat("left", matrixSize*matrixSize);
+    view_type resultMat("result", matrixSize*matrixSize);
+    
+    //Make Host view types
     host_view_type h_result = Kokkos::create_mirror_view(resultMat);
+    host_view_type h_right = Kokkos::create_mirror_view(rightMat);
+    host_view_type h_left = Kokkos::create_mirror_view(leftMat);
+    
+    //Try to deep copy the right and left matrix over?????
+    Kokkos::deep_copy(rightMat, h_right);
+    Kokkos::deep_copy(leftMat, h_left);
 
+    //Make the functor
     KokkosFunctor kokkosFunctor(matrixSize, rightMat, leftMat, resultMat);
     
-    Kokkos::parallel_for(matrixSize*matrixSize, kokkosFunctor);
+    Kokkos::parallel_for(matrixSize, kokkosFunctor);
     Kokkos::fence();
-    Kokkos::deep_copy(h_result, resultMat);
     
+    // Deep copy it back
+    Kokkos::deep_copy(h_result, resultMat);
+     
+  for (unsigned int i = 0; i < matrixSize; i++) {
+    for (unsigned int j = 0; j < matrixSize; j++) {
+	checkSumKokkos += h_result(i*matrixSize + j);
+    }
   }
+  }
+  
 
   // stop timing
   toc = high_resolution_clock::now();
@@ -522,11 +556,11 @@ int main(int argc, char* argv[]) {
   double kokkosCheckSum = 0;
   for (unsigned int row = 0; row < matrixSize; ++row) {
     for (unsigned int col = 0; col < matrixSize; ++col) {
-      kokkosCheckSum += resultMat(row, col);
+      kokkosCheckSum += resultMatrix(row, col);
     }
   }
   sprintf(methodName, "naive kokkos");
-  if (std::abs(cacheUnfriendlyCheckSum - kokkosCheckSum) / cacheUnfriendlyCheckSum < 1e-3) {
+  if (std::abs(cacheUnfriendlyCheckSum - checkSumKokkos) / cacheUnfriendlyCheckSum < 1e-3) {
     printf("%-38s : time %6.2f speedup w.r.t. unfriendly %6.2f, w.r.t. friendly %6.2f\n",
            methodName,
            kokkosElapsedTime,
