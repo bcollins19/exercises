@@ -99,13 +99,25 @@ class TbbFunctorNaive {
 public:
 
   const unsigned int _matrixSize;
+  RowMajorMatrix * _rightMatrix;
+  RowMajorMatrix * _leftMatrix;
+  RowMajorMatrix * _resultMatrix;
 
-  TbbFunctorNaive(const unsigned int matrixSize) :
-    _matrixSize(matrixSize) {
+  TbbFunctorNaive(const unsigned int matrixSize, RowMajorMatrix * rightMatrix,
+		  RowMajorMatrix * leftMatrix, RowMajorMatrix * resultMatrix) :
+    _matrixSize(matrixSize), _rightMatrix(rightMatrix), _leftMatrix(leftMatrix),
+    _resultMatrix(resultMatrix) {
   }
 
   void operator()(const tbb::blocked_range<size_t> & range) const {
     // TODO: something!
+    for (unsigned int i = range.begin(); i < range.end(); i++) {
+	for (unsigned int j = 0; j < _matrixSize; j++) {
+	    for (unsigned int k = 0; k < _matrixSize; k++) {
+		(*_resultMatrix)(i, j) += (*_leftMatrix)(i, k) * (*_rightMatrix)(k, j);
+	    }
+	}
+    }
   }
 
 private:
@@ -142,17 +154,32 @@ private:
 
 };
 
+typedef Kokkos::View<RowMajorMatrix*> view_type;
+typedef view_type::HostMirror host_view_type;
+
 struct KokkosFunctor {
 
   const unsigned int _matrixSize;
+  view_type _rightMatrix;
+  view_type _leftMatrix;
+  view_type _resultMatrix;
 
-  KokkosFunctor(const unsigned int matrixSize) :
-    _matrixSize(matrixSize) {
+
+  KokkosFunctor(const unsigned int matrixSize, view_type rightMatrix,
+		view_type leftMatrix, view_type resultMatrix) :
+    _matrixSize(matrixSize), _rightMatrix(rightMatrix), _leftMatrix(leftMatrix),
+    _resultMatrix(resultMatrix) {
   }
 
   KOKKOS_INLINE_FUNCTION
   void operator()(const unsigned int elementIndex) const {
     // TODO: something!
+    for (unsigned int j = 0; j < _matrixSize; j++) {
+	for (unsigned int k = 0; k < _matrixSize; k++) {
+	    _resultMatrix(0)(elementIndex, j) += _leftMatrix(0)(elementIndex, k) * 
+					      _rightMatrix(0)(k, j);
+	}
+    }
   }
 
 private:
@@ -287,14 +314,17 @@ int main(int argc, char* argv[]) {
     tbb::task_scheduler_init init(numberOfThreads);
 
     // prepare the tbb functor.
-    const TbbFunctorNaive tbbFunctor(matrixSize);
+    const TbbFunctorNaive tbbFunctor(matrixSize, &rightMatrixRow, &leftMatrix,
+				    &resultMatrix);
 
     // start timing
     tic = high_resolution_clock::now();
     for (unsigned int repeatIndex = 0;
          repeatIndex < numberOfRepeats; ++repeatIndex) {
       // TODO: dispatch threads
+	parallel_for(tbb::blocked_range<size_t>(0, matrixSize), tbbFunctor);
     }
+
     // stop timing
     toc = high_resolution_clock::now();
     const double tbbElapsedTime =
@@ -344,6 +374,16 @@ int main(int argc, char* argv[]) {
     for (unsigned int repeatIndex = 0;
          repeatIndex < numberOfRepeats; ++repeatIndex) {
       // TODO: do openmp
+	#pragma omp parallel for
+	    //Figure out how to do it!
+	    for (unsigned int i = 0; i < matrixSize; i++) {
+		for (unsigned int j = 0; j < matrixSize; j++) {
+		    for (unsigned int k = 0; k < matrixSize; k++) {
+			resultMatrix(i, j) += leftMatrix(i,k) * rightMatrixRow(k,j);
+		    }
+		}
+	    }
+	
     }
 
     // stop timing
@@ -459,6 +499,18 @@ int main(int argc, char* argv[]) {
   for (unsigned int repeatIndex = 0;
        repeatIndex < numberOfRepeats; ++repeatIndex) {
     // TODO: do kokkos calculation
+    view_type rightMat("right", rightMatrixRow);
+    view_type leftMat("left", leftMatrix);
+    view_type resultMat("result", resultMatrix);
+    
+    host_view_type h_result = Kokkos::create_mirror_view(resultMat);
+
+    KokkosFunctor kokkosFunctor(matrixSize, rightMat, leftMat, resultMat);
+    
+    Kokkos::parallel_for(matrixSize*matrixSize, kokkosFunctor);
+    Kokkos::fence();
+    Kokkos::deep_copy(h_result, resultMat);
+    
   }
 
   // stop timing
@@ -470,7 +522,7 @@ int main(int argc, char* argv[]) {
   double kokkosCheckSum = 0;
   for (unsigned int row = 0; row < matrixSize; ++row) {
     for (unsigned int col = 0; col < matrixSize; ++col) {
-      kokkosCheckSum += resultMatrix(row, col);
+      kokkosCheckSum += resultMat(row, col);
     }
   }
   sprintf(methodName, "naive kokkos");
