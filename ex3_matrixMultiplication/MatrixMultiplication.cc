@@ -63,6 +63,18 @@ struct ColMajorMatrix {
     return _data[row + col * _matrixSize];
   }
 
+  inline
+  double &
+  operator()(const unsigned int index) {
+    return _data[index];
+  }
+
+  inline 
+  double 
+  operator()(const unsigned int index) const {
+    return _data[index];
+  }
+
   void
   fill(const double value) {
     std::fill(_data.begin(), _data.end(), 0);
@@ -84,6 +96,18 @@ struct RowMajorMatrix {
   }
 
   inline
+  double &
+  operator()(const unsigned int index) {
+    return _data[index];
+  }
+
+  inline 
+  double 
+  operator()(const unsigned int index) const {
+    return _data[index];
+  }
+
+  inline
   double
   operator()(const unsigned int row, const unsigned int col) const {
     return _data[row * _matrixSize + col];
@@ -99,16 +123,16 @@ class TbbFunctorNaive {
 public:
 
   const unsigned int _matrixSize;
-  RowMajorMatrix * _rightMatrix;
+  ColMajorMatrix * _rightMatrix;
   RowMajorMatrix * _leftMatrix;
   RowMajorMatrix * _resultMatrix;
 
-  TbbFunctorNaive(const unsigned int matrixSize, RowMajorMatrix * rightMatrix,
+  TbbFunctorNaive(const unsigned int matrixSize, ColMajorMatrix * rightMatrix,
 		  RowMajorMatrix * leftMatrix, RowMajorMatrix * resultMatrix) :
     _matrixSize(matrixSize), _rightMatrix(rightMatrix), _leftMatrix(leftMatrix),
     _resultMatrix(resultMatrix) {
   }
-
+    
   void operator()(const tbb::blocked_range<size_t> & range) const {
     // TODO: something!
     for (unsigned int i = range.begin(); i < range.end(); i++) {
@@ -119,7 +143,18 @@ public:
 	}
     }
   }
-
+    
+/*
+    void operator()(const tbb::blocked_range<size_t> & range) const {
+	for (unsigned int i = range.begin(); i < range.end(); i++) {
+	    unsigned int bound = (i/_matrixSize)*_matrixSize;
+	    unsigned int col = i%_matrixSize;
+	    for (unsigned int j = 0; j < _matrixSize; j++) {
+		(*_resultMatrix)(i) += (*_leftMatrix)(bound+j) * (*_rightMatrix)(col+j*_matrixSize);
+	    }
+	}
+    }
+*/
 private:
   TbbFunctorNaive();
 
@@ -146,7 +181,22 @@ public:
   }
 
   void operator()(const tbb::blocked_range<size_t> & range) const {
-    // TODO: something!
+	unsigned int loopBound = _matrixSize/_tileSize;
+	for (unsigned int i = range.begin(); i < range.end(); i++) {
+	    for (unsigned int j = 0; j < loopBound; j++) {
+		for (unsigned int k = 0; k < loopBound; k++) {
+		    for (unsigned int i1 = 0; i1 < _tileSize; i1++) {
+			for (unsigned int j1 = 0; j1 < _tileSize; j1++) {
+			    for (unsigned int k1 = 0; k1 < _tileSize; k1++) {
+				(*_tiledResultMatrix)[i*_tileSize*_matrixSize + j*_tileSize + i1*_matrixSize + j1] +=
+				(*_tiledLeftMatrix)[i*_tileSize*_matrixSize + j*_tileSize + i1*_matrixSize + k1] *
+				(*_tiledRightMatrix)[j*_tileSize*_matrixSize + i*_tileSize + k1*_matrixSize + j1];       
+			    }
+			}
+		    }
+		}
+	    }
+	}
   }
 
 private:
@@ -273,6 +323,15 @@ int main(int argc, char* argv[]) {
   for (unsigned int repeatIndex = 0;
        repeatIndex < numberOfRepeats; ++repeatIndex) {
     // TODO: do cache-friendly multiplication
+    for (unsigned int row = 0; row < matrixSize; ++row) {
+      for (unsigned int col = 0; col < matrixSize; ++col) {
+        resultMatrix(row, col) = 0;
+        for (unsigned int dummy = 0; dummy < matrixSize; ++dummy) {
+          resultMatrix(row, col) +=
+            leftMatrix(row, dummy) * rightMatrixCol(dummy, col);
+        }
+      }
+    }
   }
 
   toc = high_resolution_clock::now();
@@ -314,7 +373,7 @@ int main(int argc, char* argv[]) {
     tbb::task_scheduler_init init(numberOfThreads);
 
     // prepare the tbb functor.
-    const TbbFunctorNaive tbbFunctor(matrixSize, &rightMatrixRow, &leftMatrix,
+    const TbbFunctorNaive tbbFunctor(matrixSize, &rightMatrixCol, &leftMatrix,
 				    &resultMatrix);
 
     // start timing
@@ -379,7 +438,7 @@ int main(int argc, char* argv[]) {
 	    for (unsigned int i = 0; i < matrixSize; i++) {
 		for (unsigned int j = 0; j < matrixSize; j++) {
 		    for (unsigned int k = 0; k < matrixSize; k++) {
-			resultMatrix(i, j) += leftMatrix(i,k) * rightMatrixRow(k,j);
+			resultMatrix(i, j) += leftMatrix(i,k) * rightMatrixCol(k,j);
 		    }
 		}
 	    }
@@ -628,7 +687,7 @@ int main(int argc, char* argv[]) {
   // vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
 
   //const vector<unsigned int> tileSizes = {16, 32, 64};
-  const vector<unsigned int> tileSizes = {};
+  const vector<unsigned int> tileSizes = {16};
 
   for (const unsigned int tileSize : tileSizes) {
 
@@ -638,6 +697,12 @@ int main(int argc, char* argv[]) {
                                     std::numeric_limits<double>::quiet_NaN());
     vector<double> tiledResultMatrix(matrixSize * matrixSize, 0);
     // TODO: form left matrix
+    for (unsigned int i = 0; i < matrixSize; i++) {
+	for (unsigned int j = 0; j < matrixSize; j++) {
+	    tiledLeftMatrix[i*matrixSize + j] = leftMatrix(i, j);
+	    tiledRightMatrix[i*matrixSize + j] = rightMatrixRow(i, j);
+	}
+    }
     // TODO: form right matrix
 
     // ===============================================================
@@ -645,10 +710,29 @@ int main(int argc, char* argv[]) {
     // vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
 
     double tiledElapsedTime = 0;
+    tic = high_resolution_clock::now();
     for (unsigned int repeatIndex = 0;
          repeatIndex < numberOfRepeats; ++repeatIndex) {
       // TODO: do tiled matrix multiplication
+	unsigned int loopBound = matrixSize/tileSize;
+	for (unsigned int i = 0; i < loopBound; i++) {
+	    for (unsigned int j = 0; j < loopBound; j++) {
+		for (unsigned int k = 0; k < loopBound; k++) {
+		    for (unsigned int i1 = 0; i1 < tileSize; i1++) {
+			for (unsigned int j1 = 0; j1 < tileSize; j1++) {
+			    for (unsigned int k1 = 0; k1 < tileSize; k1++) {
+				tiledResultMatrix[i*tileSize*matrixSize + j*tileSize + i1*matrixSize + j1] +=
+				tiledLeftMatrix[i*tileSize*matrixSize + j*tileSize + i1*matrixSize + k1] *
+				tiledRightMatrix[j*tileSize*matrixSize + i*tileSize + k1*matrixSize + j1];       
+			    }
+			}
+		    }
+		}
+	    }
+	}
     }
+    toc = high_resolution_clock::now();
+    tiledElapsedTime = duration_cast<duration<double>>(toc - tic).count();
     // check the answer
     double tiledCheckSum = 0;
     for (const double entry : tiledResultMatrix) {
@@ -691,10 +775,17 @@ int main(int argc, char* argv[]) {
                                        &tiledResultMatrix);
 
       double tbbElapsedTime = 0;
+      tic = high_resolution_clock::now();
+      
       for (unsigned int repeatIndex = 0;
            repeatIndex < numberOfRepeats; ++repeatIndex) {
         // TODO: something!
+	parallel_for(tbb::blocked_range<size_t>(0, matrixSize/tileSize), tbbFunctor);
       }
+      toc = high_resolution_clock::now();
+      tbbElapsedTime =
+	duration_cast<duration<double> >(toc - tic).count();
+
 
       // check the answer
       double tbbCheckSum = 0;
@@ -732,11 +823,32 @@ int main(int argc, char* argv[]) {
       omp_set_num_threads(numberOfThreads);
 
       double ompElapsedTime = 0;
+      tic = high_resolution_clock::now();
       for (unsigned int repeatIndex = 0;
            repeatIndex < numberOfRepeats; ++repeatIndex) {
         // TODO: something!
+	unsigned int loopBound = matrixSize/tileSize;
+	#pragma omp for
+	for (unsigned int i = 0; i < loopBound; i++) {
+	    for (unsigned int j = 0; j < loopBound; j++) {
+		for (unsigned int k = 0; k < loopBound; k++) {
+		    for (unsigned int i1 = 0; i1 < tileSize; i1++) {
+			for (unsigned int j1 = 0; j1 < tileSize; j1++) {
+			    for (unsigned int k1 = 0; k1 < tileSize; k1++) {
+				tiledResultMatrix[i*tileSize*matrixSize + j*tileSize + i1*matrixSize + j1] +=
+				tiledLeftMatrix[i*tileSize*matrixSize + j*tileSize + i1*matrixSize + k1] *
+				tiledRightMatrix[j*tileSize*matrixSize + i*tileSize + k1*matrixSize + j1];       
+			    }
+			}
+		    }
+		}
+	    }
+	}
       }
 
+      toc = high_resolution_clock::now();
+      ompElapsedTime =
+	duration_cast<duration<double> >(toc - tic).count();
 
       double ompCheckSum = 0;
       for (const double entry : tiledResultMatrix) {
